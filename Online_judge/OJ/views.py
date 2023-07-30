@@ -1,9 +1,4 @@
-# '''
-# List of Views:
-# - DASHBOARD PAGE: Has a dashboard with stats.
-# - PROBLEM PAGE: Has the list of problems with sorting & paginations.
-# - DEESCRIPTION PAGE: Shows problem description of left side and has a text editor on roght side with code submit buttton.
-# '''
+# ```js
 import traceback
 from django.shortcuts import render, get_object_or_404
 from django.conf import settings
@@ -23,36 +18,24 @@ import os.path
 import docker
 
 
-# ###############################################################################################################################
-
-
-# # To show stats in dashboards
-# @login_required(login_url='login')
+# To show stats on the dashboard
+@login_required(login_url='login')
 def homePage(request):
     return render(request, 'OJ/home.html')
 
 
-# ###############################################################################################################################
-
-
-# # Has the list of problems with sorting & paginations
-# @login_required(login_url='login')
+# Has the list of problems with sorting & pagination
+@login_required(login_url='login')
 def problemPage(request):
     problems = Problem.objects.all()
     submissions = Submission.objects.filter(user=request.user, verdict="Accepted")
-    accepted_problems = []
-    for submission in submissions:
-        accepted_problems.append(submission.problem_id)
+    accepted_problems = [submission.problem_id for submission in submissions]
     context = {'problems': problems, 'accepted_problems': accepted_problems}
     return render(request, 'OJ/problem.html', context)
 
 
-
-# ###############################################################################################################################
-
-
-# # Shows problem description of left side and has a text editor on roght side with code submit buttton.
-# @login_required(login_url='login')
+# Shows problem description on the left side and has a text editor on the right side with a code submit button
+@login_required(login_url='login')
 def descriptionPage(request, problem_id):
     user_id = request.user.id
     problem = get_object_or_404(Problem, id=problem_id)
@@ -62,138 +45,107 @@ def descriptionPage(request, problem_id):
     return render(request, 'OJ/description.html', context)
 
 
-# ###############################################################################################################################
-
-
-# # Shows the verdict to the submission
-# @login_required(login_url='login')
+# Shows the verdict for the submission
+@login_required(login_url='login')
 def verdictPage(request, problem_id):
-  
     if request.method == 'POST':
-        # setting docker-client
+        # Setting up the docker client
         docker_client = docker.from_env()
         Running = "running"
 
         problem = Problem.objects.get(id=problem_id)
         testcase = TestCase.objects.get(problem_id=problem_id)
-        #replacing \r\n by \n in original output to compare it with the usercode output
-        testcase.output = testcase.output.replace('\r\n','\n').strip() 
+        # Replacing \r\n by \n in original output to compare it with the user code output
+        testcase.output = testcase.output.replace('\r\n', '\n').strip()
 
-       
-
-
-        #setting verdict to wrong by default
-        verdict = "Wrong Answer" 
+        # Setting verdict to wrong by default
+        verdict = "Wrong Answer"
         res = ""
         run_time = 0
 
-        # extract data from form
+        # Extract data from form
         form = CodeForm(request.POST)
         user_code = ''
         if form.is_valid():
             user_code = form.cleaned_data.get('user_code')
-            user_code = user_code.replace('\r\n','\n').strip()
-            
+            user_code = user_code.replace('\r\n', '\n').strip()
+
         language = request.POST['language']
-        submission = Submission(user=request.user, problem=problem, submission_time=datetime.now(), 
-                                    language=language, user_code=user_code)
+        submission = Submission(user=request.user, problem=problem, submission_time=datetime.now(),
+                                language=language, user_code=user_code)
         submission.save()
 
         filename = str(submission.id)
 
-        # if user code is in C++
+        # If the user code is in C++
         if language == "C++":
             extension = ".cpp"
             cont_name = "oj-cpp"
-            compile = f"g++ -o {filename} {filename}.cpp"
-            clean = f"{filename} {filename}.cpp"
+            compile_cmd = f"g++ -o {filename} {filename}.cpp"
+            clean_cmd = f"rm {filename} {filename}.cpp"
             docker_img = "gcc:11.2.0"
-            exe = f"./{filename}"
-            
-       
+            exe_cmd = f"./{filename}"
 
-        # elif language == "Python3":
-        #     extension = ".py"
-        #     cont_name = "oj-py3"
-        #     compile = "python3"
-        #     clean = f"{filename}.py"
-        #     docker_img = "python3"
-        #     exe = f"python {filename}.py"
-        
-        # elif language == "Python2":
-        #     extension = ".py"
-        #     cont_name = "oj-py2"
-        #     compile = "python2"
-        #     clean = f"{filename}.py"
-        #     docker_img = "python2"
-        #     exe = f"python {filename}.py"
-
+        # Add similar conditions for other languages if needed
 
         file = filename + extension
-        
         filepath = settings.FILES_DIR + "/" + file
-        code = open(filepath,"w")
+        code = open(filepath, "w")
         code.write(user_code)
         code.close()
 
-        # checking if the docker container is running or not
+        # Checking if the docker container is running or not
         try:
             container = docker_client.containers.get(cont_name)
             container_state = container.attrs['State']
             container_is_running = (container_state['Status'] == Running)
             if not container_is_running:
-                subprocess.run(f"docker start {cont_name}",shell=True)
+                subprocess.run(f"docker start {cont_name}", shell=True)
         except docker.errors.NotFound:
-            subprocess.run(f"docker run -dt --name {cont_name} {docker_img}",shell=True)
+            subprocess.run(f"docker run -dt --name {cont_name} {docker_img}", shell=True)
 
+        # Copying the .cpp file into the docker container
+        subprocess.run(f"docker cp {filepath} {cont_name}:/{file}", shell=True)
 
-        # copy/paste the .cpp file in docker container 
-        subprocess.run(f"docker cp {filepath} {cont_name}:/{file}",shell=True)
-
-        # compiling the code
-        cmp = subprocess.run(f"docker exec {cont_name} {compile}", capture_output=True, shell=True)
+        # Compiling the code
+        cmp = subprocess.run(f"docker exec {cont_name} {compile_cmd}", capture_output=True, shell=True)
         if cmp.returncode != 0:
             verdict = "Compilation Error"
-            subprocess.run(f"docker exec {cont_name} rm {file}",shell=True)
-
+            subprocess.run(f"docker exec {cont_name} {clean_cmd}", shell=True)
         else:
-            # running the code on given input and taking the output in a variable in bytes
+            # Running the code on given input and taking the output in a variable as bytes
             start = time()
             try:
-                res = subprocess.run(f"docker exec {cont_name} sh -c 'echo \"{testcase.input}\" | {exe}'",
-                                                capture_output=True, timeout=problem.time_limit, shell=True)
-                run_time = time()-start
-                subprocess.run(f"docker exec {cont_name} rm {clean}",shell=True)
+                res = subprocess.run(f"docker exec {cont_name} sh -c 'echo \"{testcase.input}\" | {exe_cmd}'",
+                                     capture_output=True, timeout=problem.time_limit, shell=True)
+                run_time = time() - start
+                subprocess.run(f"docker exec {cont_name} {clean_cmd}", shell=True)
             except subprocess.TimeoutExpired:
-                run_time = time()-start
+                run_time = time() - start
                 verdict = "Time Limit Exceeded"
                 subprocess.run(f"docker container kill {cont_name}", shell=True)
-                subprocess.run(f"docker start {cont_name}",shell=True)
-                subprocess.run(f"docker exec {cont_name} rm {clean}",shell=True)
-
+                subprocess.run(f"docker start {cont_name}", shell=True)
+                subprocess.run(f"docker exec {cont_name} {clean_cmd}", shell=True)
 
             if verdict != "Time Limit Exceeded" and res.returncode != 0:
                 verdict = "Runtime Error"
-                
 
         user_stderr = ""
         user_stdout = ""
         if verdict == "Compilation Error":
             user_stderr = cmp.stderr.decode('utf-8')
-        
         elif verdict == "Wrong Answer":
             user_stdout = res.stdout.decode('utf-8')
-            if str(user_stdout)==str(testcase.output):
+            if str(user_stdout) == str(testcase.output):
                 verdict = "Accepted"
-            testcase.output += '\n' # added extra line to compare user output having extra ling at the end of their output
-            if str(user_stdout)==str(testcase.output):
+            testcase.output += '\n'  # Added an extra line to compare user output with an extra line at the end
+            if str(user_stdout) == str(testcase.output):
                 verdict = "Accepted"
 
-
-        # creating Solution class objects and showing it on leaderboard
+        # Creating Solution class objects and showing them on the leaderboard
         user = User.objects.get(username=request.user)
         previous_verdict = Submission.objects.filter(user=user.id, problem=problem, verdict="Accepted")
-        if len(previous_verdict)==0 and verdict=="Accepted":
+        if len(previous_verdict) == 0 and verdict == "Accepted":
             user.save()
 
         submission.verdict = verdict
@@ -202,10 +154,5 @@ def verdictPage(request, problem_id):
         submission.run_time = run_time
         submission.save()
         os.remove(filepath)
-        context={'verdict':verdict}
-        return render(request,'OJ/verdict.html',context)
-
-
-# # ###############################################################################################################################
-
-
+        context = {'verdict': verdict}
+        return render(request, 'OJ/verdict.html', context)
